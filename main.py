@@ -6,7 +6,6 @@ import time
 
 app = FastAPI()
 
-# ===== CẤU HÌNH CORS (BẮT BUỘC ĐỂ LOVABLE TRUY CẬP ĐƯỢC) =====
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,106 +14,69 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===== DANH SÁCH 50 COIN VIP + GOLD =====
 COINS = [
-    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
-    "PAXGUSDT", # Đây là Gold (Vàng) - Sẽ được đổi tên hiển thị thành XAUUSD
-    "ADAUSDT","DOGEUSDT","TRXUSDT","AVAXUSDT","DOTUSDT",
-    "LINKUSDT","MATICUSDT","LTCUSDT","BCHUSDT","ATOMUSDT",
-    "NEARUSDT","FILUSDT","APTUSDT","ARBUSDT","OPUSDT",
-    "INJUSDT","SUIUSDT","SEIUSDT","PEPEUSDT","SHIBUSDT",
-    "UNIUSDT","AAVEUSDT","MKRUSDT","RUNEUSDT","GRTUSDT",
-    "ALGOUSDT","VETUSDT","ICPUSDT","SANDUSDT","MANAUSDT",
-    "AXSUSDT","FLOWUSDT","EGLDUSDT","THETAUSDT","KASUSDT",
-    "TIAUSDT","JUPUSDT","WIFUSDT","BONKUSDT","FTMUSDT",
-    "HBARUSDT","EOSUSDT","XTZUSDT","GALAUSDT"
+    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","PAXGUSDT",
+    "ADAUSDT","DOGEUSDT","TRXUSDT","AVAXUSDT","DOTUSDT","LINKUSDT",
+    "MATICUSDT","LTCUSDT","BCHUSDT","ATOMUSDT","NEARUSDT","FILUSDT"
 ]
 
-# ===== HÀM HỖ TRỢ LẤY DỮ LIỆU TỪ BINANCE =====
-def get_binance_data():
-    try:
-        url = "https://api.binance.com/api/v3/ticker/price"
-        response = requests.get(url, timeout=10)
-        return response.json()
-    except Exception as e:
-        print(f"Lỗi kết nối Binance: {e}")
-        return []
-
-# ===== TRANG CHỦ =====
 @app.get("/")
 def home():
-    return {"status": "PulseSignal VIP System Online", "update": "Real-time Gold & Crypto"}
+    return {"message": "Server is running"}
 
-# ===== ENDPOINT 1: LẤY GIÁ REALTIME =====
 @app.get("/prices")
 def get_prices():
-    data = get_binance_data()
-    result = []
-    
-    for item in data:
-        symbol = item.get("symbol")
-        if symbol in COINS:
-            # Đổi tên PAXGUSDT thành XAUUSD cho chuyên nghiệp
-            display_name = "XAUUSD" if symbol == "PAXGUSDT" else symbol
-            result.append({
-                "symbol": display_name,
-                "price": float(item["price"])
-            })
-    
-    return result
+    try:
+        # Tăng timeout lên 15 giây để tránh lỗi mạng chậm
+        response = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=15)
+        
+        # Kiểm tra nếu API Binance trả về lỗi (ví dụ lỗi 429 do gọi quá nhiều)
+        if response.status_code != 200:
+            return {"error": f"Binance API returned status {response.status_code}"}
+            
+        data = response.json()
+        result = []
+        
+        for item in data:
+            symbol = item.get("symbol")
+            if symbol in COINS:
+                display_name = "XAUUSD" if symbol == "PAXGUSDT" else symbol
+                result.append({
+                    "symbol": display_name,
+                    "price": float(item["price"])
+                })
+        return result
 
-# ===== ENDPOINT 2: TÍN HIỆU VIP (50 COIN) =====
+    except requests.exceptions.RequestException as e:
+        # Trả về lỗi chi tiết nếu do kết nối mạng
+        return {"error": "Connection Error", "details": str(e)}
+    except Exception as e:
+        # Trả về lỗi khác nếu có
+        return {"error": "System Error", "details": str(e)}
+
 @app.get("/signals/vip")
-def get_vip_signals():
-    data = get_binance_data()
-    signals = []
+def get_signals():
+    # Gọi hàm get_prices để tận dụng logic xử lý lỗi ở trên
+    prices_data = get_prices()
     
-    for item in data:
-        symbol = item.get("symbol")
-        if symbol in COINS:
-            price = float(item["price"])
-            display_name = "XAUUSD" if symbol == "PAXGUSDT" else symbol
-            
-            # Logic tạo tín hiệu (Có thể thay thế bằng Indicator thật sau này)
-            rsi_sim = random.randint(20, 80)
-            side = "LONG" if rsi_sim < 48 else "SHORT"
-            confidence = random.randint(75, 99)
-            
-            # Tính toán SL/TP (Long ăn 3% lỗ 1%, Short ngược lại)
-            if side == "LONG":
-                tp = round(price * 1.03, 4)
-                sl = round(price * 0.985, 4)
-            else:
-                tp = round(price * 0.97, 4)
-                sl = round(price * 1.015, 4)
-                
-            signals.append({
-                "pair": display_name,
-                "type": side,
-                "entry": price,
-                "sl": sl,
-                "tp": tp,
-                "confidence": confidence,
-                "rsi": rsi_sim,
-                "timestamp": int(time.time())
-            })
-            
-    # Sắp xếp tín hiệu có độ tin cậy cao nhất lên đầu
-    signals.sort(key=lambda x: x["confidence"], reverse=True)
+    if isinstance(prices_data, dict) and "error" in prices_data:
+        return prices_data # Trả về lỗi nếu không lấy được giá
+        
+    signals = []
+    for item in prices_data:
+        price = item["price"]
+        symbol = item["symbol"]
+        
+        confidence = random.randint(80, 98)
+        side = "LONG" if random.random() > 0.5 else "SHORT"
+        
+        signals.append({
+            "pair": symbol,
+            "type": side,
+            "entry": price,
+            "sl": round(price * 0.98, 4) if side == "LONG" else round(price * 1.02, 4),
+            "tp": round(price * 1.05, 4) if side == "LONG" else round(price * 0.95, 4),
+            "confidence": confidence,
+            "timestamp": int(time.time())
+        })
     return signals
-
-# ===== ENDPOINT 3: TÍN HIỆU FREE (LẤY 5 CÁI NGẪU NHIÊN) =====
-@app.get("/signals/free")
-def get_free_signals():
-    all_signals = get_vip_signals()
-    return all_signals[:5]
-
-# ===== ENDPOINT 4: THỐNG KÊ DASHBOARD =====
-@app.get("/summary")
-def get_summary():
-    return {
-        "active_signals": len(COINS),
-        "win_rate": "76.4%",
-        "roi_30d": "+41.2%",
-        "server_time": int(time.time())
-    }
