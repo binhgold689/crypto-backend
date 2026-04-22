@@ -90,23 +90,32 @@ def create_signal(symbol, price):
 # ===== PRICES =====
 @app.get("/prices")
 def prices():
-    data = get_binance()
-    result = []
+    try:
+        url = "https://api.binance.com/api/v3/ticker/price"
+        data = requests.get(url, timeout=10).json()
 
-    for item in data:
-        if item["symbol"] in COINS:
+        result = []
+
+        for item in data:
+            if item["symbol"] in COINS:
+                result.append({
+                    "symbol": item["symbol"],
+                    "price": float(item["price"])
+                })
+
+        for k,v in SPECIAL.items():
             result.append({
-                "symbol": item["symbol"],
-                "price": float(item["price"])
+                "symbol": k,
+                "price": v
             })
 
-    for k,v in SPECIAL.items():
-        result.append({
-            "symbol": k,
-            "price": v
-        })
+        return result
 
-    return result
+    except Exception as e:
+        return {
+            "error": str(e),
+            "message": "Failed to fetch prices"
+        }
 
 # ===== BUILD SIGNALS =====
 def all_signals():
