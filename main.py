@@ -6,9 +6,9 @@ import time
 
 app = FastAPI()
 
-# ==================================
+# =====================================
 # CORS
-# ==================================
+# =====================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,10 +17,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ==================================
-# CONFIG
-# ==================================
-COINGECKO_IDS = {
+# =====================================
+# COINGECKO MAP (20 ASSETS)
+# =====================================
+COINS = {
     "BTCUSDT": "bitcoin",
     "ETHUSDT": "ethereum",
     "BNBUSDT": "binancecoin",
@@ -32,7 +32,6 @@ COINGECKO_IDS = {
     "AVAXUSDT": "avalanche-2",
     "DOTUSDT": "polkadot",
     "LINKUSDT": "chainlink",
-    "MATICUSDT": "matic-network",
     "LTCUSDT": "litecoin",
     "BCHUSDT": "bitcoin-cash",
     "ATOMUSDT": "cosmos",
@@ -40,30 +39,33 @@ COINGECKO_IDS = {
     "ICPUSDT": "internet-computer",
     "NEARUSDT": "near",
     "FILUSDT": "filecoin",
-    "APTUSDT": "aptos"
+    "APTUSDT": "aptos",
+    "MATICUSDT": "matic-network"
 }
 
+# SPECIAL MARKETS
 SPECIAL = {
     "XAUUSD": 3325.0,
     "XAGUSD": 33.4
 }
 
-# ==================================
+# =====================================
 # HOME
-# ==================================
+# =====================================
 @app.get("/")
 def home():
     return {
-        "status": "PulseSignal FINAL Running",
-        "version": "2.0"
+        "status": "PulseSignal ULTIMATE Running",
+        "version": "3.0",
+        "time": int(time.time())
     }
 
-# ==================================
-# FETCH COINGECKO
-# ==================================
-def get_prices_data():
+# =====================================
+# FETCH MARKET DATA
+# =====================================
+def fetch_market():
     try:
-        ids = ",".join(COINGECKO_IDS.values())
+        ids = ",".join(COINS.values())
 
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd"
 
@@ -79,16 +81,16 @@ def get_prices_data():
     except:
         return {}
 
-# ==================================
-# BUILD PRICE LIST
-# ==================================
+# =====================================
+# LIVE PRICES
+# =====================================
 @app.get("/prices")
 def prices():
-    data = get_prices_data()
+    data = fetch_market()
 
     result = []
 
-    for symbol, coin_id in COINGECKO_IDS.items():
+    for symbol, coin_id in COINS.items():
         try:
             result.append({
                 "symbol": symbol,
@@ -97,21 +99,24 @@ def prices():
         except:
             pass
 
-    for k, v in SPECIAL.items():
+    for symbol, price in SPECIAL.items():
         result.append({
-            "symbol": k,
-            "price": v
+            "symbol": symbol,
+            "price": price
         })
 
     return result
 
-# ==================================
-# SIGNAL ENGINE
-# ==================================
+# =====================================
+# RSI MOCK ENGINE
+# =====================================
 def fake_rsi():
     return random.randint(18, 82)
 
-def create_signal(symbol, price):
+# =====================================
+# SIGNAL ENGINE
+# =====================================
+def build_signal(symbol, price):
     rsi = fake_rsi()
 
     if rsi < 30:
@@ -144,9 +149,9 @@ def create_signal(symbol, price):
         "timestamp": int(time.time())
     }
 
-# ==================================
+# =====================================
 # ALL SIGNALS
-# ==================================
+# =====================================
 def all_signals():
     market = prices()
 
@@ -154,7 +159,7 @@ def all_signals():
 
     for item in market:
         result.append(
-            create_signal(
+            build_signal(
                 item["symbol"],
                 item["price"]
             )
@@ -167,23 +172,23 @@ def all_signals():
 
     return result
 
-# ==================================
+# =====================================
 # FREE SIGNALS
-# ==================================
+# =====================================
 @app.get("/signals/free")
 def free_signals():
     return all_signals()[:5]
 
-# ==================================
+# =====================================
 # VIP SIGNALS
-# ==================================
+# =====================================
 @app.get("/signals/vip")
 def vip_signals():
     return all_signals()
 
-# ==================================
+# =====================================
 # SUMMARY
-# ==================================
+# =====================================
 @app.get("/summary")
 def summary():
     signals = all_signals()
@@ -196,9 +201,28 @@ def summary():
         "server_time": int(time.time())
     }
 
-# ==================================
+# =====================================
+# FEAR GREED
+# =====================================
+@app.get("/fear-greed")
+def fear_greed():
+    score = random.randint(28, 81)
+
+    if score < 40:
+        label = "Fear"
+    elif score > 70:
+        label = "Greed"
+    else:
+        label = "Neutral"
+
+    return {
+        "score": score,
+        "label": label
+    }
+
+# =====================================
 # HEALTH CHECK
-# ==================================
+# =====================================
 @app.get("/health")
 def health():
     return {
