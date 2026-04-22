@@ -6,7 +6,9 @@ import time
 
 app = FastAPI()
 
-# ===== CORS =====
+# ===============================
+# CORS
+# ===============================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,40 +17,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===== COINS =====
+# ===============================
+# COIN LIST (50 COINS)
+# ===============================
 COINS = [
-"BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
-"ADAUSDT","DOGEUSDT","TRXUSDT","AVAXUSDT","DOTUSDT",
-"LINKUSDT","MATICUSDT","LTCUSDT","BCHUSDT","ATOMUSDT",
-"ETCUSDT","XLMUSDT","NEARUSDT","FILUSDT","APTUSDT",
-"ARBUSDT","OPUSDT","INJUSDT","SUIUSDT","SEIUSDT",
-"PEPEUSDT","SHIBUSDT","UNIUSDT","AAVEUSDT","MKRUSDT",
-"RUNEUSDT","GRTUSDT","ALGOUSDT","VETUSDT","ICPUSDT",
-"SANDUSDT","MANAUSDT","AXSUSDT","FLOWUSDT","EGLDUSDT",
-"THETAUSDT","KASUSDT","TIAUSDT","JUPUSDT","WIFUSDT",
-"BONKUSDT","FTMUSDT","HBARUSDT","EOSUSDT","XTZUSDT"
+    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
+    "ADAUSDT","DOGEUSDT","TRXUSDT","AVAXUSDT","DOTUSDT",
+    "LINKUSDT","MATICUSDT","LTCUSDT","BCHUSDT","ATOMUSDT",
+    "ETCUSDT","XLMUSDT","NEARUSDT","FILUSDT","APTUSDT",
+    "ARBUSDT","OPUSDT","INJUSDT","SUIUSDT","SEIUSDT",
+    "PEPEUSDT","SHIBUSDT","UNIUSDT","AAVEUSDT","MKRUSDT",
+    "RUNEUSDT","GRTUSDT","ALGOUSDT","VETUSDT","ICPUSDT",
+    "SANDUSDT","MANAUSDT","AXSUSDT","FLOWUSDT","EGLDUSDT",
+    "THETAUSDT","KASUSDT","TIAUSDT","JUPUSDT","WIFUSDT",
+    "BONKUSDT","FTMUSDT","HBARUSDT","EOSUSDT","XTZUSDT"
 ]
 
+# SPECIAL ASSETS
 SPECIAL = {
     "XAUUSD": 3325.0,
     "XAGUSD": 33.4
 }
 
-# ===== HOME =====
+# ===============================
+# HOME
+# ===============================
 @app.get("/")
 def home():
-    return {"status":"PulseSignal VIP Running"}
+    return {
+        "status": "PulseSignal VIP Running",
+        "version": "1.0"
+    }
 
-# ===== GET BINANCE =====
+# ===============================
+# SAFE BINANCE FETCH
+# ===============================
 def get_binance():
-    url = "https://api.binance.com/api/v3/ticker/price"
-    return requests.get(url).json()
+    try:
+        url = "https://api.binance.com/api/v3/ticker/price"
+        res = requests.get(url, timeout=10)
+        res.raise_for_status()
+        return res.json()
+    except:
+        return []
 
-# ===== RSI SIMULATION =====
+# ===============================
+# RSI SIMULATION
+# ===============================
 def fake_rsi():
     return random.randint(18, 82)
 
-# ===== SIGNAL ENGINE =====
+# ===============================
+# SIGNAL ENGINE
+# ===============================
 def create_signal(symbol, price):
     rsi = fake_rsi()
 
@@ -73,12 +94,12 @@ def create_signal(symbol, price):
         sl = round(price * 1.02, 4)
         tp = round(price * 0.96, 4)
 
-    rr = round(abs(tp-price)/abs(price-sl),2)
+    rr = round(abs(tp - price) / abs(price - sl), 2)
 
     return {
         "pair": symbol,
         "type": signal_type,
-        "entry": round(price,4),
+        "entry": round(price, 4),
         "sl": sl,
         "tp": tp,
         "confidence": confidence,
@@ -87,73 +108,84 @@ def create_signal(symbol, price):
         "timestamp": int(time.time())
     }
 
-# ===== PRICES =====
+# ===============================
+# PRICES
+# ===============================
 @app.get("/prices")
 def prices():
-    try:
-        url = "https://api.binance.com/api/v3/ticker/price"
-        data = requests.get(url, timeout=10).json()
+    data = get_binance()
 
-        result = []
+    result = []
 
-        for item in data:
+    for item in data:
+        try:
             if item["symbol"] in COINS:
                 result.append({
                     "symbol": item["symbol"],
                     "price": float(item["price"])
                 })
+        except:
+            pass
 
-        for k,v in SPECIAL.items():
-            result.append({
-                "symbol": k,
-                "price": v
-            })
+    for k, v in SPECIAL.items():
+        result.append({
+            "symbol": k,
+            "price": v
+        })
 
-        return result
+    return result
 
-    except Exception as e:
-        return {
-            "error": str(e),
-            "message": "Failed to fetch prices"
-        }
-
-# ===== BUILD SIGNALS =====
+# ===============================
+# BUILD SIGNALS
+# ===============================
 def all_signals():
     data = get_binance()
+
     result = []
 
     for item in data:
-        if item["symbol"] in COINS[:20]:
-            result.append(
-                create_signal(
-                    item["symbol"],
-                    float(item["price"])
+        try:
+            if item["symbol"] in COINS[:20]:
+                result.append(
+                    create_signal(
+                        item["symbol"],
+                        float(item["price"])
+                    )
                 )
-            )
+        except:
+            pass
 
-    for k,v in SPECIAL.items():
-        result.append(create_signal(k,v))
+    for k, v in SPECIAL.items():
+        result.append(create_signal(k, v))
 
     result.sort(key=lambda x: x["confidence"], reverse=True)
 
     return result
 
-# ===== FREE =====
+# ===============================
+# FREE SIGNALS (TOP 5)
+# ===============================
 @app.get("/signals/free")
-def free():
+def free_signals():
     return all_signals()[:5]
 
-# ===== VIP =====
+# ===============================
+# VIP SIGNALS (FULL)
+# ===============================
 @app.get("/signals/vip")
-def vip():
+def vip_signals():
     return all_signals()
 
-# ===== SUMMARY =====
+# ===============================
+# SUMMARY
+# ===============================
 @app.get("/summary")
 def summary():
+    signals = all_signals()
+
     return {
-        "active_signals": len(all_signals()),
-        "win_rate":"74.2%",
-        "roi_30d":"+38.7%",
-        "vip_users":127
+        "active_signals": len(signals),
+        "win_rate": "74.2%",
+        "roi_30d": "+38.7%",
+        "vip_users": 127
     }
