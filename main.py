@@ -14,58 +14,49 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Danh sách coin (MEXC dùng định dạng giống Binance: BTCUSDT)
 COINS = [
-    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","PAXGUSDT",
-    "ADAUSDT","DOGEUSDT","TRXUSDT","AVAXUSDT","DOTUSDT","LINKUSDT",
-    "MATICUSDT","LTCUSDT","BCHUSDT","ATOMUSDT","NEARUSDT","FILUSDT"
+    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
+    "PAXGUSDT", # Gold
+    "ADAUSDT","DOGEUSDT","TRXUSDT","AVAXUSDT","DOTUSDT",
+    "LINKUSDT","MATICUSDT","LTCUSDT","BCHUSDT","ATOMUSDT",
+    "NEARUSDT","FILUSDT"
 ]
-
-# Danh sách các cổng API dự phòng của Binance
-BINANCE_ENDPOINTS = [
-    "https://api1.binance.com/api/v3/ticker/price",
-    "https://api2.binance.com/api/v3/ticker/price",
-    "https://api3.binance.com/api/v3/ticker/price",
-    "https://api.binance.com/api/v3/ticker/price"
-]
-
-def fetch_prices_safe():
-    for url in BINANCE_ENDPOINTS:
-        try:
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(f"Cổng {url} lỗi {response.status_code}, đang thử cổng khác...")
-        except:
-            continue
-    return None
 
 @app.get("/")
 def home():
-    return {"message": "PulseSignal VIP Online - Geo-Fix Enabled"}
+    return {"message": "PulseSignal VIP Online - MEXC Data Source Enabled"}
 
 @app.get("/prices")
 def get_prices():
-    data = fetch_prices_safe()
-    
-    if data is None:
-        return {"error": "Tất cả các cổng Binance đều chặn IP của server. Hãy thử đổi khu vực (Region) trên Railway sang Europe."}
+    try:
+        # Sử dụng API của sàn MEXC - Rất ít khi chặn IP
+        url = "https://api.mexc.com/api/v3/ticker/price"
+        response = requests.get(url, timeout=10)
         
-    result = []
-    for item in data:
-        symbol = item.get("symbol")
-        if symbol in COINS:
-            display_name = "XAUUSD" if symbol == "PAXGUSDT" else symbol
-            result.append({
-                "symbol": display_name,
-                "price": float(item["price"])
-            })
-    return result
+        if response.status_code != 200:
+            return {"error": f"MEXC API returned {response.status_code}"}
+            
+        data = response.json()
+        result = []
+        
+        # MEXC trả về danh sách các dict {'symbol': '...', 'price': '...'}
+        for item in data:
+            symbol = item.get("symbol")
+            if symbol in COINS:
+                display_name = "XAUUSD" if symbol == "PAXGUSDT" else symbol
+                result.append({
+                    "symbol": display_name,
+                    "price": float(item["price"])
+                })
+        return result
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/signals/vip")
 def get_signals():
     prices_data = get_prices()
-    if "error" in prices_data:
+    if isinstance(prices_data, dict) and "error" in prices_data:
         return prices_data
         
     signals = []
@@ -73,19 +64,17 @@ def get_signals():
         price = item["price"]
         symbol = item["symbol"]
         
-        # Logic giả lập tín hiệu dựa trên giá thật
-        confidence = random.randint(82, 98)
-        side = "LONG" if random.random() > 0.45 else "SHORT"
+        # Logic giả lập tín hiệu
+        confidence = random.randint(85, 99)
+        side = "LONG" if random.random() > 0.5 else "SHORT"
         
         signals.append({
             "pair": symbol,
             "type": side,
             "entry": price,
-            "sl": round(price * 0.985, 4) if side == "LONG" else round(price * 1.015, 4),
-            "tp": round(price * 1.04, 4) if side == "LONG" else round(price * 0.96, 4),
+            "sl": round(price * 0.98, 4) if side == "LONG" else round(price * 1.02, 4),
+            "tp": round(price * 1.05, 4) if side == "LONG" else round(price * 0.95, 4),
             "confidence": confidence,
             "timestamp": int(time.time())
         })
-    
-    signals.sort(key=lambda x: x["confidence"], reverse=True)
     return signals
