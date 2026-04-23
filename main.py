@@ -1,13 +1,16 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 import requests
 import random
 import time
 import asyncio
+import sqlite3
+from datetime import datetime, timedelta
 
 app = FastAPI()
 
-# Cấu hình CORS để Dashboard Lovable truy cập được
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,13 +19,102 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- THÔNG TIN CẤU HÌNH ---
+# --- CẤU HÌNH ---
 TELEGRAM_TOKEN = "8679086264:AAHNVmsiHxmQUiLdKtYNLkBdEfKLxRMsuw"
 CHAT_ID = "-1003101971466"
-# Danh sách 10 đồng coin mục tiêu
 COINS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "PAXGUSDT", "ADAUSDT", "DOGEUSDT", "DOTUSDT", "AVAXUSDT"]
 
-# --- ENDPOINT LẤY GIÁ ---
+# --- KHỞI TẠO DATABASE ---
+def init_db():
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users 
+                 (email TEXT PRIMARY KEY, password TEXT, role TEXT, expire_date TEXT)''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# --- MODELS ---
+class UserAuth(BaseModel):
+    email: str
+    password: str
+
+# --- LOGIC NGƯỜI DÙNG ---
+@app.post("/register")
+def register(user: UserAuth):
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    try:
+        # Mặc định đăng ký mới là 'free', dùng thử 7 ngày
+        expire = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+        c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (user.email, user.password, 'free', expire))
+        conn.commit()
+        return {"message": "Đăng ký thành công! Bạn có 7 ngày dùng thử."}
+    except:
+        raise HTTPException(status_code=400, detail="Email đã tồn tại")
+    finally: conn.close()
+
+@app.post("/login")
+def login(user: UserAuth):
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute("SELECT email, role, expire_date FROM users WHERE email=? AND password=?", (user.email, user.password))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return {"email": row[0], "role": row[1], "expire": row[2]}
+    raise HTTPException(status_code=401, detail="Sai tài khoản hoặc mật khẩu")
+
+# --- TRANG ADMIN ẨN (DÀNH RIÊNG CHO BINH GOLD) ---
+@app.get("/binh-gold-admin-portal", response_class=HTMLResponse)
+def admin_page():
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM users")
+    users = c.fetchall()
+    conn.close()
+    
+    html_content = """
+    <html>
+        <head><title>Admin Binh Gold</title><meta charset="UTF-8">
+        <style>body{font-family:sans-serif; background:#121212; color:white; padding:20px;}
+        table{width:100%; border-collapse:collapse;} th,td{border:1px solid #333; padding:10px; text-align:left;}
+        th{background:#1f1f1f;} .btn{background:#e91e63; color:white; border:none; padding:5px 10px; cursor:pointer; border-radius:3px;}</style>
+        </head>
+        <body>
+            <h2>Quản Lý User VIP - PulseSignal</h2>
+            <table>
+                <tr><th>Email</th><th>Quyền</th><th>Hết hạn</th><th>Hành động</th></tr>
+    """
+    for u in users:
+        html_content += f"""
+        <tr>
+            <td>{u[0]}</td><td>{u[2].upper()}</td><td>{u[3]}</td>
+            <td><button class='btn' onclick="activateVIP('{u[0]}')">Kích hoạt 30 ngày VIP</button></td>
+        </tr>"""
+    
+    html_content += """
+            </table>
+            <script>
+                function activateVIP(email) {
+                    fetch('/activate-vip?email=' + email).then(() => location.reload());
+                }
+            </script>
+        </body></html>"""
+    return html_content
+
+@app.get("/activate-vip")
+def activate_vip(email: str):
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    new_expire = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+    c.execute("UPDATE users SET role='vip', expire_date=? WHERE email=?", (new_expire, email))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
+
+# --- LẤY DỮ LIỆU TÍN HIỆU (VẪN GIỮ LOGIC CHỐNG CHẶN) ---
 @app.get("/prices")
 def get_prices():
     try:
@@ -30,86 +122,63 @@ def get_prices():
         res = requests.get(url, timeout=5).json()
         return [{"symbol": "XAUUSD" if i['symbol']=="PAXGUSDT" else i['symbol'], "price": float(i['lastPrice'])} 
                 for i in res if i['symbol'] in COINS]
-    except:
-        return []
+    except: return []
 
-# --- ENDPOINT TÍN HIỆU VIP (BẢN KHÔNG BỊ CHẶN) ---
 @app.get("/signals/vip")
-def vip_signals():
+def vip_signals(email: str = "guest"):
+    # Kiểm tra quyền VIP (Chỉ VIP mới thấy kèo chuẩn)
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute("SELECT role FROM users WHERE email=?", (email,))
+    user = c.fetchone()
+    conn.close()
+
     signals = []
     try:
-        # Lấy dữ liệu ticker 24h - Endpoint này rất khó bị sàn chặn IP
         url = "https://api.mexc.com/api/v3/ticker/24hr"
         res = requests.get(url, timeout=5).json()
-        
         for item in res:
             if item['symbol'] in COINS:
                 symbol = item['symbol']
                 price = float(item['lastPrice'])
                 change = float(item['priceChangePercent'])
-                
-                # THUẬT TOÁN: Giả lập RSI và Tín hiệu dựa trên biến động giá thực tế (Price Action)
-                # Nếu giá giảm mạnh trong 24h qua -> Ưu tiên LONG (Rebound)
-                # Nếu giá tăng mạnh trong 24h qua -> Ưu tiên SHORT (Correction)
                 side = "LONG" if change < 0 else "SHORT"
-                
-                # Tính RSI giả lập dựa trên % thay đổi để Dashboard luôn có dữ liệu đẹp
                 rsi_mock = round(50 - (change * 1.5), 2)
-                rsi_mock = max(18, min(82, rsi_mock)) # Giới hạn RSI trong khoảng 18-82
+                rsi_mock = max(18, min(82, rsi_mock))
                 
-                conf = random.randint(86, 97) # Độ tin cậy cao để kích hoạt Telegram
+                # Nếu là khách hoặc bản free, bóp độ tin cậy xuống thấp để kích thích mua VIP
+                conf = random.randint(86, 97) if (user and user[0] == 'vip') else random.randint(50, 70)
 
                 signals.append({
                     "pair": "XAUUSD" if symbol == "PAXGUSDT" else symbol,
-                    "type": side,
-                    "entry": price,
+                    "type": side, "entry": price,
                     "sl": round(price * 0.982, 4) if side == "LONG" else round(price * 1.018, 4),
                     "tp": round(price * 1.05, 4) if side == "LONG" else round(price * 0.95, 4),
-                    "confidence": conf,
-                    "rsi": rsi_mock,
-                    "timestamp": int(time.time())
+                    "confidence": conf, "rsi": rsi_mock, "timestamp": int(time.time())
                 })
-    except:
-        pass
-
-    # Sắp xếp các kèo có độ tin cậy cao nhất lên đầu
+    except: pass
     signals.sort(key=lambda x: x["confidence"], reverse=True)
     return signals
 
-# --- LOGIC GỬI TELEGRAM ---
-def send_telegram_msg(message):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
-        requests.post(url, json=payload, timeout=5)
-    except: pass
-
+# --- TELEGRAM WORKER ---
 async def telegram_worker():
     sent_signals = {}
     while True:
         try:
-            signals = vip_signals()
-            for s in signals:
-                # Chỉ bắn những kèo "siêu thơm" vào Channel Telegram
-                if s['confidence'] > 93 and s['pair'] not in sent_signals:
-                    msg = (
-                        f"🚀 *TÍN HIỆU VIP: {s['pair']}*\n"
-                        f"━━━━━━━━━━━━━━━\n"
-                        f"👉 Loại: *{s['type']}*\n"
-                        f"📍 Entry: `{s['entry']}`\n"
-                        f"🎯 TP: `{s['tp']}` | 🛑 SL: `{s['sl']}`\n"
-                        f"📊 RSI: `{s['rsi']}` | Tin cậy: `{s['confidence']}%`\n"
-                        f"━━━━━━━━━━━━━━━\n"
-                        f"📱 [Xem Dashboard](https://your-lovable-link.lovable.app)"
-                    )
-                    send_telegram_msg(msg)
-                    sent_signals[s['pair']] = time.time()
-            
-            # Reset bộ nhớ gửi tin sau 2 tiếng để có thể gửi lại cặp đó nếu có biến động mới
-            curr = time.time()
-            sent_signals = {k: v for k, v in sent_signals.items() if curr - v < 7200}
+            # Bot chỉ bắn kèo từ sàn (không cần check user)
+            url = "https://api.mexc.com/api/v3/ticker/24hr"
+            res = requests.get(url, timeout=5).json()
+            for i in res:
+                if i['symbol'] in COINS and abs(float(i['priceChangePercent'])) > 3: # Biến động > 3%
+                    symbol = i['symbol']
+                    if symbol not in sent_signals:
+                        msg = f"🚀 *KÈO BIẾN ĐỘNG MẠNH: {symbol}*\nGiá: `{i['lastPrice']}`\nBiến động: `{i['priceChangePercent']}%`"
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", 
+                                      json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
+                        sent_signals[symbol] = time.time()
+            sent_signals = {k: v for k, v in sent_signals.items() if time.time() - v < 7200}
         except: pass
-        await asyncio.sleep(300) # Quét mỗi 5 phút một lần
+        await asyncio.sleep(600)
 
 @app.on_event("startup")
 async def startup_event():
@@ -117,4 +186,4 @@ async def startup_event():
 
 @app.get("/")
 def home():
-    return {"status": "PulseSignal VIP v2 Online"}
+    return {"status": "PulseSignal Auth System Online"}
