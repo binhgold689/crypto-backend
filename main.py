@@ -46,11 +46,11 @@ def register(user: UserAuth):
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
     try:
-        # Mặc định đăng ký mới là 'free', dùng thử 7 ngày
-        expire = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+        # Mặc định đăng ký mới là 'free', dùng thử 3 ngày
+        expire = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
         c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (user.email, user.password, 'free', expire))
         conn.commit()
-        return {"message": "Đăng ký thành công! Bạn có 7 ngày dùng thử."}
+        return {"message": "Đăng ký thành công! Bạn có 3 ngày dùng thử."}
     except:
         raise HTTPException(status_code=400, detail="Email đã tồn tại")
     finally: conn.close()
