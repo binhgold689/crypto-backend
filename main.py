@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 app = FastAPI()
 
-# --- 1. CẤU HÌNH CORS (Cho phép tradezenith.live truy cập) ---
+# --- 1. CẤU HÌNH CORS (Cho phép tradezenith.live truy cập dữ liệu) ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -43,6 +43,8 @@ class UserAuth(BaseModel):
     password: str
 
 # --- 5. LOGIC NGƯỜI DÙNG ---
+
+# ĐĂNG KÝ: Đã chỉnh về 3 ngày dùng thử
 @app.post("/register")
 async def register(user: UserAuth):
     conn = sqlite3.connect('users.db')
@@ -52,20 +54,21 @@ async def register(user: UserAuth):
         if c.fetchone():
             raise HTTPException(status_code=400, detail="Email đã tồn tại")
         
-        # Mặc định dùng thử 7 ngày theo ảnh giao diện mới của bạn
-        expire = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+        # Mặc định dùng thử 3 ngày (Sửa từ 7 xuống 3 theo yêu cầu)
+        expire = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
         c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (user.email, user.password, 'free', expire))
         conn.commit()
         
-        msg = f"🔔 USER MỚI: {user.email}\n🎁 Tặng 7 ngày dùng thử đến: {expire}"
+        msg = f"🔔 USER MỚI: {user.email}\n🎁 Tặng 3 ngày dùng thử đến: {expire}"
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg})
         
-        return {"status": "success", "message": "Đăng ký thành công! Bạn có 7 ngày dùng thử."}
+        return {"status": "success", "message": "Đăng ký thành công!", "expire": expire}
     except Exception as e:
         return {"status": "error", "message": str(e)}
     finally:
         conn.close()
 
+# ĐĂNG NHẬP: Fix lỗi Invalid credentials
 @app.post("/login")
 def login(user: UserAuth):
     conn = sqlite3.connect('users.db')
@@ -75,9 +78,22 @@ def login(user: UserAuth):
     conn.close()
     if row:
         return {"email": row[0], "role": row[1], "expire": row[2]}
-    raise HTTPException(status_code=401, detail="Sai tài khoản hoặc mật khẩu")
+    # Trả về đúng mã 401 để Lovable nhận diện lỗi đăng nhập
+    raise HTTPException(status_code=401, detail="Invalid login credentials")
 
-# --- 6. TRANG ADMIN (Thêm nút cấp 1 tháng và 1 năm) ---
+# --- 6. HỆ THỐNG QUẢN TRỊ (ADMIN) ---
+
+# Endpoint 1: Trả về JSON để trang web tradezenith.live của bạn hiển thị danh sách
+@app.get("/admin/users-json")
+def get_users_json():
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute("SELECT email, role, expire_date FROM users")
+    rows = c.fetchall()
+    conn.close()
+    return [{"email": r[0], "role": r[1], "expire_date": r[2]} for r in rows]
+
+# Endpoint 2: Trang Admin HTML dự phòng (Link Railway trực tiếp)
 @app.get("/binh-gold-admin-portal", response_class=HTMLResponse)
 def admin_page():
     conn = sqlite3.connect('users.db')
