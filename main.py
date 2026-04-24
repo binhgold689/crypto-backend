@@ -12,10 +12,10 @@ from datetime import datetime, timedelta
 
 app = FastAPI()
 
-# --- 1. CẤU HÌNH CORS (Sửa lỗi không nhận được dữ liệu từ Lovable/Domain) ---
+# --- 1. CẤU HÌNH CORS (Cho phép tradezenith.live truy cập) ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Mở rộng để đảm bảo tradezenith.live và các sub-domain Lovable không bị chặn
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,27 +42,25 @@ class UserAuth(BaseModel):
     email: str
     password: str
 
-# --- 5. LOGIC NGƯỜI DÙNG (Register/Login) ---
+# --- 5. LOGIC NGƯỜI DÙNG ---
 @app.post("/register")
 async def register(user: UserAuth):
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
     try:
-        # Kiểm tra email tồn tại
         c.execute("SELECT email FROM users WHERE email=?", (user.email,))
         if c.fetchone():
             raise HTTPException(status_code=400, detail="Email đã tồn tại")
         
-        # Mặc định đăng ký mới là 'free', dùng thử 3 ngày
-        expire = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
+        # Mặc định dùng thử 7 ngày theo ảnh giao diện mới của bạn
+        expire = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
         c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (user.email, user.password, 'free', expire))
         conn.commit()
         
-        # Gửi thông báo Telegram
-        msg = f"🔔 CÓ USER MỚI: {user.email}\n🎁 Tặng 3 ngày dùng thử đến: {expire}"
+        msg = f"🔔 USER MỚI: {user.email}\n🎁 Tặng 7 ngày dùng thử đến: {expire}"
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg})
         
-        return {"status": "success", "message": "Đăng ký thành công! Bạn có 3 ngày dùng thử."}
+        return {"status": "success", "message": "Đăng ký thành công! Bạn có 7 ngày dùng thử."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
     finally:
@@ -79,12 +77,12 @@ def login(user: UserAuth):
         return {"email": row[0], "role": row[1], "expire": row[2]}
     raise HTTPException(status_code=401, detail="Sai tài khoản hoặc mật khẩu")
 
-# --- 6. TRANG ADMIN PORTAL (Quản lý User & Kích hoạt VIP) ---
+# --- 6. TRANG ADMIN (Thêm nút cấp 1 tháng và 1 năm) ---
 @app.get("/binh-gold-admin-portal", response_class=HTMLResponse)
 def admin_page():
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
-    c.execute("SELECT * FROM users")
+    c.execute("SELECT email, role, expire_date FROM users")
     users = c.fetchall()
     conn.close()
     
@@ -97,7 +95,9 @@ def admin_page():
             table{{width:100%; border-collapse:collapse; margin-top:20px; background:#1e293b;}} 
             th,td{{border:1px solid #334155; padding:12px; text-align:left;}}
             th{{background:#334155; color:#38bdf8;}}
-            .btn{{background:linear-gradient(90deg, #06b6d4, #3b82f6); color:white; border:none; padding:8px 15px; cursor:pointer; border-radius:6px; font-weight:bold;}}
+            .btn{{color:white; border:none; padding:8px 12px; cursor:pointer; border-radius:6px; font-weight:bold; margin-right:5px;}}
+            .btn-30{{background:#3b82f6;}}
+            .btn-365{{background:#f59e0b;}}
         </style>
         </head>
         <body>
@@ -108,16 +108,19 @@ def admin_page():
     for u in users:
         html_content += f"""
         <tr>
-            <td>{u[0]}</td><td>{u[2].upper()}</td><td>{u[3]}</td>
-            <td><button class='btn' onclick="activateVIP('{u[0]}')">Kích hoạt 30 ngày VIP</button></td>
+            <td>{u[0]}</td><td>{u[1].upper()}</td><td>{u[2]}</td>
+            <td>
+                <button class='btn btn-30' onclick="activateVIP('{u[0]}', 30)">+30 Ngày</button>
+                <button class='btn btn-365' onclick="activateVIP('{u[0]}', 365)">+1 Năm VIP</button>
+            </td>
         </tr>"""
     
     html_content += """
             </table>
             <script>
-                function activateVIP(email) {
-                    if(confirm('Kích hoạt VIP cho ' + email + '?')) {
-                        fetch('/activate-vip?email=' + email).then(() => {
+                function activateVIP(email, days) {
+                    if(confirm('Kích hoạt ' + days + ' ngày VIP cho ' + email + '?')) {
+                        fetch('/activate-vip?email=' + email + '&days=' + days).then(() => {
                             alert('Thành công!');
                             location.reload();
                         });
@@ -128,24 +131,24 @@ def admin_page():
     return html_content
 
 @app.get("/activate-vip")
-def activate_vip(email: str):
+def activate_vip(email: str, days: int = 30):
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
-    new_expire = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+    new_expire = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
     c.execute("UPDATE users SET role='vip', expire_date=? WHERE email=?", (new_expire, email))
     conn.commit()
     conn.close()
     
-    msg = f"✅ ĐÃ KÍCH HOẠT VIP\n📧 User: {email}\n📅 Hết hạn: {new_expire}"
+    label = "1 NĂM" if days == 365 else "30 NGÀY"
+    msg = f"✅ ĐÃ KÍCH HOẠT VIP ({label})\n📧 User: {email}\n📅 Hết hạn: {new_expire}"
     requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg})
     return {"status": "success"}
 
-# --- 7. DỮ LIỆU TÍN HIỆU & GIÁ (MEXC API) ---
+# --- 7. DỮ LIỆU TÍN HIỆU ---
 @app.get("/prices")
 def get_prices():
     try:
-        url = "https://api.mexc.com/api/v3/ticker/24hr"
-        res = requests.get(url, timeout=5).json()
+        res = requests.get("https://api.mexc.com/api/v3/ticker/24hr", timeout=5).json()
         return [{"symbol": "XAUUSD" if i['symbol']=="PAXGUSDT" else i['symbol'], "price": float(i['lastPrice'])} 
                 for i in res if i['symbol'] in COINS]
     except: return []
@@ -160,50 +163,23 @@ def vip_signals(email: str = "guest"):
 
     signals = []
     try:
-        url = "https://api.mexc.com/api/v3/ticker/24hr"
-        res = requests.get(url, timeout=5).json()
+        res = requests.get("https://api.mexc.com/api/v3/ticker/24hr", timeout=5).json()
         for item in res:
             if item['symbol'] in COINS:
                 symbol = item['symbol']
                 price = float(item['lastPrice'])
                 change = float(item['priceChangePercent'])
-                side = "LONG" if change < 0 else "SHORT"
-                rsi_mock = max(18, min(82, round(50 - (change * 1.5), 2)))
-                conf = random.randint(86, 97) if (user and user[0] == 'vip') else random.randint(50, 70)
-
+                conf = random.randint(88, 98) if (user and user[0] == 'vip') else random.randint(50, 70)
                 signals.append({
                     "pair": "XAUUSD" if symbol == "PAXGUSDT" else symbol,
-                    "type": side, "entry": price,
-                    "sl": round(price * 0.982, 4) if side == "LONG" else round(price * 1.018, 4),
-                    "tp": round(price * 1.05, 4) if side == "LONG" else round(price * 0.95, 4),
-                    "confidence": conf, "rsi": rsi_mock, "timestamp": int(time.time())
+                    "type": "LONG" if change < 0 else "SHORT",
+                    "entry": price,
+                    "confidence": conf,
+                    "timestamp": int(time.time())
                 })
     except: pass
-    signals.sort(key=lambda x: x["confidence"], reverse=True)
     return signals
-
-# --- 8. TELEGRAM WORKER ---
-async def telegram_worker():
-    sent_signals = {}
-    while True:
-        try:
-            url = "https://api.mexc.com/api/v3/ticker/24hr"
-            res = requests.get(url, timeout=5).json()
-            for i in res:
-                if i['symbol'] in COINS and abs(float(i['priceChangePercent'])) > 3:
-                    symbol = i['symbol']
-                    if symbol not in sent_signals or time.time() - sent_signals[symbol] > 7200:
-                        msg = f"🚀 *BIẾN ĐỘNG MẠNH: {symbol}*\nGiá: `{i['lastPrice']}`\nThay đổi: `{i['priceChangePercent']}%`"
-                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", 
-                                      json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
-                        sent_signals[symbol] = time.time()
-        except: pass
-        await asyncio.sleep(600)
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(telegram_worker())
 
 @app.get("/")
 def home():
-    return {"status": "PulseSignal System Online", "admin": "/binh-gold-admin-portal"}
+    return {"status": "PulseSignal Online", "admin": "/binh-gold-admin-portal"}
