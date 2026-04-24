@@ -3,19 +3,17 @@ import sqlite3
 import requests
 import random
 import time
-import asyncio
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 
 app = FastAPI()
 
-# --- 1. CẤU HÌNH CORS (Cho phép tradezenith.live truy cập dữ liệu) ---
+# --- 1. CẤU HÌNH CORS (Bắt buộc để Lovable truy cập được) ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,38 +35,31 @@ def init_db():
 
 init_db()
 
-# --- 4. MODELS ---
 class UserAuth(BaseModel):
     email: str
     password: str
 
-# --- 5. LOGIC NGƯỜI DÙNG ---
+# --- 4. API ĐĂNG KÝ & ĐĂNG NHẬP ---
 
-# ĐĂNG KÝ: Đã chỉnh về 3 ngày dùng thử
 @app.post("/register")
 async def register(user: UserAuth):
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
     try:
-        c.execute("SELECT email FROM users WHERE email=?", (user.email,))
-        if c.fetchone():
-            raise HTTPException(status_code=400, detail="Email đã tồn tại")
-        
-        # Mặc định dùng thử 3 ngày (Sửa từ 7 xuống 3 theo yêu cầu)
         expire = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
         c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (user.email, user.password, 'free', expire))
         conn.commit()
         
-        msg = f"🔔 USER MỚI: {user.email}\n🎁 Tặng 3 ngày dùng thử đến: {expire}"
+        # Gửi Telegram
+        msg = f"🔔 USER MỚI: {user.email}\n🎁 Dùng thử 3 ngày đến: {expire}"
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg})
         
-        return {"status": "success", "message": "Đăng ký thành công!", "expire": expire}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return {"status": "success", "expire": expire}
+    except:
+        raise HTTPException(status_code=400, detail="Email đã tồn tại")
     finally:
         conn.close()
 
-# ĐĂNG NHẬP: Fix lỗi Invalid credentials
 @app.post("/login")
 def login(user: UserAuth):
     conn = sqlite3.connect('users.db')
@@ -78,73 +69,20 @@ def login(user: UserAuth):
     conn.close()
     if row:
         return {"email": row[0], "role": row[1], "expire": row[2]}
-    # Trả về đúng mã 401 để Lovable nhận diện lỗi đăng nhập
     raise HTTPException(status_code=401, detail="Invalid login credentials")
 
-# --- 6. HỆ THỐNG QUẢN TRỊ (ADMIN) ---
+# --- 5. API QUẢN TRỊ (Fix lỗi bảng trắng trang Admin) ---
 
-# Endpoint 1: Trả về JSON để trang web tradezenith.live của bạn hiển thị danh sách
+# Endpoint này trả về JSON để Lovable vẽ biểu đồ và danh sách
 @app.get("/admin/users-json")
-def get_users_json():
+@app.get("/binh-gold-admin-portal") # Chạy cả 2 link cho chắc chắn
+def get_users_admin():
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
     c.execute("SELECT email, role, expire_date FROM users")
     rows = c.fetchall()
     conn.close()
     return [{"email": r[0], "role": r[1], "expire_date": r[2]} for r in rows]
-
-# Endpoint 2: Trang Admin HTML dự phòng (Link Railway trực tiếp)
-@app.get("/binh-gold-admin-portal", response_class=HTMLResponse)
-def admin_page():
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute("SELECT email, role, expire_date FROM users")
-    users = c.fetchall()
-    conn.close()
-    
-    html_content = f"""
-    <html>
-        <head><title>Admin Binh Gold</title><meta charset="UTF-8">
-        <style>
-            body{{font-family:sans-serif; background:#0f172a; color:white; padding:40px;}}
-            h2{{color:#38bdf8; border-bottom: 2px solid #38bdf8; padding-bottom:10px;}}
-            table{{width:100%; border-collapse:collapse; margin-top:20px; background:#1e293b;}} 
-            th,td{{border:1px solid #334155; padding:12px; text-align:left;}}
-            th{{background:#334155; color:#38bdf8;}}
-            .btn{{color:white; border:none; padding:8px 12px; cursor:pointer; border-radius:6px; font-weight:bold; margin-right:5px;}}
-            .btn-30{{background:#3b82f6;}}
-            .btn-365{{background:#f59e0b;}}
-        </style>
-        </head>
-        <body>
-            <h2>💎 Quản Lý User VIP - PulseSignal ({len(users)})</h2>
-            <table>
-                <tr><th>Email</th><th>Quyền</th><th>Hết hạn</th><th>Hành động</th></tr>
-    """
-    for u in users:
-        html_content += f"""
-        <tr>
-            <td>{u[0]}</td><td>{u[1].upper()}</td><td>{u[2]}</td>
-            <td>
-                <button class='btn btn-30' onclick="activateVIP('{u[0]}', 30)">+30 Ngày</button>
-                <button class='btn btn-365' onclick="activateVIP('{u[0]}', 365)">+1 Năm VIP</button>
-            </td>
-        </tr>"""
-    
-    html_content += """
-            </table>
-            <script>
-                function activateVIP(email, days) {
-                    if(confirm('Kích hoạt ' + days + ' ngày VIP cho ' + email + '?')) {
-                        fetch('/activate-vip?email=' + email + '&days=' + days).then(() => {
-                            alert('Thành công!');
-                            location.reload();
-                        });
-                    }
-                }
-            </script>
-        </body></html>"""
-    return html_content
 
 @app.get("/activate-vip")
 def activate_vip(email: str, days: int = 30):
@@ -154,13 +92,10 @@ def activate_vip(email: str, days: int = 30):
     c.execute("UPDATE users SET role='vip', expire_date=? WHERE email=?", (new_expire, email))
     conn.commit()
     conn.close()
-    
-    label = "1 NĂM" if days == 365 else "30 NGÀY"
-    msg = f"✅ ĐÃ KÍCH HOẠT VIP ({label})\n📧 User: {email}\n📅 Hết hạn: {new_expire}"
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg})
     return {"status": "success"}
 
-# --- 7. DỮ LIỆU TÍN HIỆU ---
+# --- 6. DỮ LIỆU GIÁ & TÍN HIỆU ---
+
 @app.get("/prices")
 def get_prices():
     try:
@@ -171,6 +106,7 @@ def get_prices():
 
 @app.get("/signals/vip")
 def vip_signals(email: str = "guest"):
+    # Kiểm tra quyền VIP từ database
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
     c.execute("SELECT role FROM users WHERE email=?", (email,))
@@ -182,14 +118,11 @@ def vip_signals(email: str = "guest"):
         res = requests.get("https://api.mexc.com/api/v3/ticker/24hr", timeout=5).json()
         for item in res:
             if item['symbol'] in COINS:
-                symbol = item['symbol']
-                price = float(item['lastPrice'])
-                change = float(item['priceChangePercent'])
                 conf = random.randint(88, 98) if (user and user[0] == 'vip') else random.randint(50, 70)
                 signals.append({
-                    "pair": "XAUUSD" if symbol == "PAXGUSDT" else symbol,
-                    "type": "LONG" if change < 0 else "SHORT",
-                    "entry": price,
+                    "pair": "XAUUSD" if item['symbol'] == "PAXGUSDT" else item['symbol'],
+                    "type": "LONG" if float(item['priceChangePercent']) < 0 else "SHORT",
+                    "entry": float(item['lastPrice']),
                     "confidence": conf,
                     "timestamp": int(time.time())
                 })
@@ -198,4 +131,4 @@ def vip_signals(email: str = "guest"):
 
 @app.get("/")
 def home():
-    return {"status": "PulseSignal Online", "admin": "/binh-gold-admin-portal"}
+    return {"status": "Backend PulseSignal Online"}
