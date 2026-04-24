@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 app = FastAPI()
 
-# --- 1. CẤU HÌNH CORS (Bắt buộc để Lovable truy cập được) ---
+# --- 1. CẤU HÌNH CORS ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,7 +39,7 @@ class UserAuth(BaseModel):
     email: str
     password: str
 
-# --- 4. API ĐĂNG KÝ & ĐĂNG NHẬP ---
+# --- 4. API ĐĂNG KÝ & ĐĂNG NHẬP (Fix lỗi Hình 1) ---
 
 @app.post("/register")
 async def register(user: UserAuth):
@@ -47,10 +47,11 @@ async def register(user: UserAuth):
     c = conn.cursor()
     try:
         expire = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
-        c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (user.email, user.password, 'free', expire))
+        # Lưu mật khẩu dạng text thuần để khớp 100% với login
+        c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (user.email.strip(), user.password.strip(), 'free', expire))
         conn.commit()
         
-        # Gửi Telegram
+        # Gửi Telegram thông báo có User mới
         msg = f"🔔 USER MỚI: {user.email}\n🎁 Dùng thử 3 ngày đến: {expire}"
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg})
         
@@ -64,18 +65,17 @@ async def register(user: UserAuth):
 def login(user: UserAuth):
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
-    c.execute("SELECT email, role, expire_date FROM users WHERE email=? AND password=?", (user.email, user.password))
+    # Dùng strip() để tránh lỗi thừa dấu cách khi copy-paste (Hình 1)
+    c.execute("SELECT email, role, expire_date FROM users WHERE email=? AND password=?", (user.email.strip(), user.password.strip()))
     row = c.fetchone()
     conn.close()
     if row:
         return {"email": row[0], "role": row[1], "expire": row[2]}
     raise HTTPException(status_code=401, detail="Invalid login credentials")
 
-# --- 5. API QUẢN TRỊ (Fix lỗi bảng trắng trang Admin) ---
+# --- 5. API QUẢN TRỊ & KÍCH HOẠT VIP (Fix lỗi Hình 2 & 3) ---
 
-# Endpoint này trả về JSON để Lovable vẽ biểu đồ và danh sách
-@app.get("/admin/users-json")
-@app.get("/binh-gold-admin-portal") # Chạy cả 2 link cho chắc chắn
+@app.get("/binh-gold-admin-portal")
 def get_users_admin():
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
@@ -88,11 +88,24 @@ def get_users_admin():
 def activate_vip(email: str, days: int = 30):
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
-    new_expire = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+    # Cộng dồn ngày hết hạn
+    c.execute("SELECT expire_date FROM users WHERE email=?", (email,))
+    current_expire = c.fetchone()
+    
+    start_date = datetime.now()
+    if current_expire and datetime.strptime(current_expire[0], "%Y-%m-%d") > datetime.now():
+        start_date = datetime.strptime(current_expire[0], "%Y-%m-%d")
+        
+    new_expire = (start_date + timedelta(days=days)).strftime("%Y-%m-%d")
     c.execute("UPDATE users SET role='vip', expire_date=? WHERE email=?", (new_expire, email))
     conn.commit()
     conn.close()
-    return {"status": "success"}
+    
+    # Gửi Telegram thông báo kích hoạt thành công (Hình 3)
+    msg = f"💎 KÍCH HOẠT VIP THÀNH CÔNG\n📧 Email: {email}\n📅 Hạn mới: {new_expire}\n⏱ Gói: {days} ngày"
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg})
+    
+    return {"status": "success", "new_expire": new_expire}
 
 # --- 6. DỮ LIỆU GIÁ & TÍN HIỆU ---
 
@@ -103,31 +116,6 @@ def get_prices():
         return [{"symbol": "XAUUSD" if i['symbol']=="PAXGUSDT" else i['symbol'], "price": float(i['lastPrice'])} 
                 for i in res if i['symbol'] in COINS]
     except: return []
-
-@app.get("/signals/vip")
-def vip_signals(email: str = "guest"):
-    # Kiểm tra quyền VIP từ database
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute("SELECT role FROM users WHERE email=?", (email,))
-    user = c.fetchone()
-    conn.close()
-
-    signals = []
-    try:
-        res = requests.get("https://api.mexc.com/api/v3/ticker/24hr", timeout=5).json()
-        for item in res:
-            if item['symbol'] in COINS:
-                conf = random.randint(88, 98) if (user and user[0] == 'vip') else random.randint(50, 70)
-                signals.append({
-                    "pair": "XAUUSD" if item['symbol'] == "PAXGUSDT" else item['symbol'],
-                    "type": "LONG" if float(item['priceChangePercent']) < 0 else "SHORT",
-                    "entry": float(item['lastPrice']),
-                    "confidence": conf,
-                    "timestamp": int(time.time())
-                })
-    except: pass
-    return signals
 
 @app.get("/")
 def home():
