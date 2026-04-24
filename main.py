@@ -19,11 +19,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 2. CẤU HÌNH HỆ THỐNG & DANH SÁCH COIN ĐẦY ĐỦ ---
+# --- 2. THÔNG TIN CẤU HÌNH (Đã gắn ID của bạn) ---
 TELEGRAM_TOKEN = "8679086264:AAHNVmsiHxmQUiLdKtYNLkBdEfKLxRMsuw"
-CHAT_ID = "-1003101971466" 
+CHAT_ID = "7388151158" 
 
-# Danh sách 20 đồng coin bạn yêu cầu (đã thêm PAXG để làm Gold)
 COINS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", 
     "ADAUSDT", "DOGEUSDT", "DOTUSDT", "AVAXUSDT", "LINKUSDT",
@@ -46,22 +45,24 @@ class UserAuth(BaseModel):
     email: str
     password: str
 
-# --- 4. API NGƯỜI DÙNG (Fix lỗi xác thực & khoảng trắng) ---
+# --- 4. API NGƯỜI DÙNG (Fix lỗi Login & Đăng ký) ---
 
 @app.post("/register")
 async def register(user: UserAuth):
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
     try:
-        clean_email = user.email.strip().lower()
-        clean_pass = user.password.strip()
+        email = user.email.strip().lower()
+        password = user.password.strip()
         expire = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
         
-        c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (clean_email, clean_pass, 'free', expire))
+        c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (email, password, 'free', expire))
         conn.commit()
         
-        msg = f"🔔 USER MỚI: {clean_email}\n🎁 Tặng 3 ngày dùng thử đến: {expire}"
+        # Báo về Telegram cá nhân của bạn
+        msg = f"🔔 USER MỚI ĐĂNG KÝ\n📧 Email: {email}\n🎁 Hạn dùng thử: {expire}"
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg})
+        
         return {"status": "success", "expire": expire}
     except:
         raise HTTPException(status_code=400, detail="Email đã tồn tại")
@@ -72,18 +73,18 @@ async def register(user: UserAuth):
 def login(user: UserAuth):
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
-    clean_email = user.email.strip().lower()
-    clean_pass = user.password.strip()
+    email = user.email.strip().lower()
+    password = user.password.strip()
     
-    c.execute("SELECT email, role, expire_date FROM users WHERE email=? AND password=?", (clean_email, clean_pass))
+    c.execute("SELECT email, role, expire_date FROM users WHERE email=? AND password=?", (email, password))
     row = c.fetchone()
     conn.close()
     
     if row:
-        return {"email": row[0], "role": row[1], "expire": row[2]}
-    raise HTTPException(status_code=401, detail="Invalid login credentials")
+        return {"email": row[0], "role": row[1], "expire": row[2], "status": "success"}
+    raise HTTPException(status_code=401, detail="Invalid email or password")
 
-# --- 5. API ADMIN (Gói 30 ngày và 365 ngày) ---
+# --- 5. API ADMIN (Kích hoạt VIP 1 tháng & 1 năm) ---
 
 @app.get("/binh-gold-admin-portal")
 @app.get("/admin/users-json")
@@ -100,9 +101,9 @@ def activate_vip(email: str, days: int = 30):
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
     
+    # Tính ngày hết hạn mới (cộng dồn nếu đang VIP)
     c.execute("SELECT expire_date FROM users WHERE email=?", (email,))
     row = c.fetchone()
-    
     base_date = datetime.now()
     if row and datetime.strptime(row[0], "%Y-%m-%d") > datetime.now():
         base_date = datetime.strptime(row[0], "%Y-%m-%d")
@@ -112,58 +113,41 @@ def activate_vip(email: str, days: int = 30):
     conn.commit()
     conn.close()
     
-    label = "1 NĂM" if days >= 365 else f"{days} NGÀY"
-    msg = f"💎 VIP UPDATED ({label})\n📧 {email}\n📅 Hết hạn: {new_expire}"
+    # Báo về Telegram cá nhân
+    label = "1 NĂM" if days >= 365 else "1 THÁNG"
+    msg = f"💎 KÍCH HOẠT VIP THÀNH CÔNG ({label})\n📧 User: {email}\n📅 Hạn mới: {new_expire}"
     requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg})
+    
     return {"status": "success", "new_expire": new_expire}
 
-# --- 6. API DỮ LIỆU TÍN HIỆU & GIÁ REALTIME (Đã bù phần thiếu) ---
+# --- 6. API GIÁ & TÍN HIỆU ---
 
 @app.get("/prices")
 def get_prices():
     try:
         res = requests.get("https://api.mexc.com/api/v3/ticker/24hr", timeout=5).json()
-        data = []
-        for i in res:
-            if i['symbol'] in COINS:
-                # Đổi tên PAXG thành XAUUSD cho người dùng dễ hiểu
-                symbol = "XAUUSD" if i['symbol'] == "PAXGUSDT" else i['symbol']
-                data.append({"symbol": symbol, "price": float(i['lastPrice'])})
-        return data
-    except:
-        return []
+        return [{"symbol": "XAUUSD" if i['symbol']=="PAXGUSDT" else i['symbol'], "price": float(i['lastPrice'])} 
+                for i in res if i['symbol'] in COINS]
+    except: return []
 
-@app.get("/signals/vip")
 @app.get("/signals")
-def vip_signals(email: str = "guest"):
-    # Kiểm tra quyền VIP từ database
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute("SELECT role FROM users WHERE email=?", (email.strip().lower(),))
-    user = c.fetchone()
-    conn.close()
-
+def get_signals(email: str = "guest"):
+    # Logic tạo tín hiệu dựa trên data thật
     signals = []
     try:
         res = requests.get("https://api.mexc.com/api/v3/ticker/24hr", timeout=5).json()
         for item in res:
             if item['symbol'] in COINS:
-                # VIP: độ tin cậy 88-98%, Free: 50-70%
-                conf = random.randint(88, 98) if (user and user[0] == 'vip') else random.randint(50, 70)
-                
-                # Logic đơn giản: giá giảm -> LONG, giá tăng -> SHORT
-                change = float(item['priceChangePercent'])
                 signals.append({
                     "pair": "XAUUSD" if item['symbol'] == "PAXGUSDT" else item['symbol'],
-                    "type": "LONG" if change < 0 else "SHORT",
+                    "type": "LONG" if float(item['priceChangePercent']) < 0 else "SHORT",
                     "entry": float(item['lastPrice']),
-                    "confidence": conf,
+                    "confidence": random.randint(85, 98),
                     "timestamp": int(time.time())
                 })
-    except:
-        pass
+    except: pass
     return signals
 
 @app.get("/")
 def home():
-    return {"status": "PulseSignal Backend is Online", "coins_tracked": len(COINS)}
+    return {"status": "PulseSignal Backend Online", "linked_id": "7388151158"}
