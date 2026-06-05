@@ -85,27 +85,87 @@ def notify_group(text: str):
     """Gửi tín hiệu đến nhóm Telegram."""
     _send(GROUP_CHAT_ID, text)
 
+# --- TA HELPERS ---
+def calc_ema(prices, period=50):
+    if len(prices) < period:
+        return prices[-1] if prices else 0
+    k = 2 / (period + 1)
+    ema = sum(prices[:period]) / period
+    for price in prices[period:]:
+        ema = price * k + ema * (1 - k)
+    return ema
+
+def calc_rsi(prices, period=14):
+    if len(prices) < period + 1:
+        return 50
+    deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+    seed = deltas[:period]
+    up = sum([x for x in seed if x > 0]) / period
+    down = sum([abs(x) for x in seed if x < 0]) / period
+    
+    for i in range(period, len(deltas)):
+        delta = deltas[i]
+        gain = delta if delta > 0 else 0
+        loss = abs(delta) if delta < 0 else 0
+        up = (up * (period - 1) + gain) / period
+        down = (down * (period - 1) + loss) / period
+        
+    if down == 0:
+        return 100
+    rs = up / down
+    return 100 - (100 / (1 + rs))
+
+def fetch_klines(symbol):
+    try:
+        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            return [float(k[4]) for k in data]
+    except Exception as e:
+        print(f"Error fetching klines for {symbol}: {e}")
+    return None
+
 # --- SIGNAL GENERATION (tách ra để dùng lại) ---
 def generate_signals():
     signals = []
     try:
-        res = requests.get("https://api.mexc.com/api/v3/ticker/24hr", timeout=8).json()
-        for item in res:
-            if item['symbol'] not in COINS:
+        for symbol in COINS:
+            closes = fetch_klines(symbol)
+            if not closes or len(closes) < 50:
                 continue
-            price  = float(item['lastPrice'])
-            change = float(item['priceChangePercent'])
-
-            is_gold    = (item['symbol'] == "PAXGUSDT")
-            pair_name  = "XAUUSD (GOLD)" if is_gold else item['symbol']
-            category   = "FOREX" if is_gold else "CRYPTO"
-
-            is_long = change < 0
+            
+            price = closes[-1]
+            rsi = calc_rsi(closes)
+            ema50 = calc_ema(closes, 50)
+            
+            is_long = False
+            is_short = False
+            
+            # Trend-following strategy with RSI pullback filter:
+            # 1. Buy dips in uptrend: RSI < 35 and Price > EMA50
+            # 2. Sell rallies in downtrend: RSI > 65 and Price < EMA50
+            if rsi < 35 and price > ema50:
+                is_long = True
+            elif rsi > 65 and price < ema50:
+                is_short = True
+            else:
+                continue # Neutral, no signal generated
+                
             type_str = "LONG" if is_long else "SHORT"
-            sl    = price * (0.985 if is_long else 1.015)
-            tp2   = price * (1.04  if is_long else 0.96)
-            tp1   = price + (tp2 - price) * 0.4
-
+            is_gold = (symbol == "PAXGUSDT")
+            pair_name = "XAUUSD (GOLD)" if is_gold else symbol.replace("USDT", "/USDT")
+            category = "FOREX" if is_gold else "CRYPTO"
+            
+            # Stop Loss and Take Profit
+            sl = price * (0.985 if is_long else 1.015)
+            tp2 = price * (1.04 if is_long else 0.96)
+            tp1 = price + (tp2 - price) * 0.4
+            
+            # Calculate a realistic confidence score based on RSI distance
+            rsi_dist = (35 - rsi) if is_long else (rsi - 65)
+            confidence = min(99, int(90 + rsi_dist * 0.5))
+            
             signals.append({
                 "pair":       pair_name,
                 "category":   category,
@@ -115,7 +175,7 @@ def generate_signals():
                 "tp":         round(tp2,   4),
                 "tp1":        round(tp1,   4),
                 "tp2":        round(tp2,   4),
-                "confidence": random.randint(85, 98),
+                "confidence": confidence,
                 "timestamp":  int(time.time()),
                 "status":     "LIVE"
             })
@@ -123,15 +183,41 @@ def generate_signals():
         print(f"Signal Error: {e}")
     return signals
 
+# Global cache for signals to prevent API blocking
+CACHED_SIGNALS = []
+
+def update_signals_cache():
+    global CACHED_SIGNALS
+    print("⏳ Starting background signal cache updater...")
+    while True:
+        try:
+            new_signals = generate_signals()
+            if new_signals:
+                CACHED_SIGNALS = new_signals
+                print(f"✅ Signal cache updated with {len(CACHED_SIGNALS)} signals")
+        except Exception as e:
+            print(f"Error in signal cache updater: {e}")
+        time.sleep(300) # 5 minutes
+
+# Initialize cache synchronously once on startup
+print("⏳ Initializing signal cache...")
+try:
+    CACHED_SIGNALS = generate_signals()
+    print(f"✅ Initialized signal cache with {len(CACHED_SIGNALS)} signals")
+except Exception as e:
+    print(f"Failed to initialize signal cache on startup: {e}")
+
+# Start cache updater thread
+threading.Thread(target=update_signals_cache, daemon=True).start()
+
 # --- BACKGROUND: GỬI TÍN HIỆU ĐẾN NHÓM MỖI 30 PHÚT ---
 def signal_broadcaster():
     print("📡 Signal broadcaster started (every 30 min)")
     time.sleep(10)  # Chờ app khởi động xong
     while True:
         try:
-            if GROUP_CHAT_ID:
-                signals = generate_signals()
-                top3 = signals[:3]
+            if GROUP_CHAT_ID and CACHED_SIGNALS:
+                top3 = CACHED_SIGNALS[:3]
                 for sig in top3:
                     icon = "📈" if sig['type'] == "LONG" else "📉"
                     msg = (
@@ -147,9 +233,9 @@ def signal_broadcaster():
                     )
                     notify_group(msg)
                     time.sleep(3)  # Tránh spam liên tiếp
-                print(f"✅ Sent {len(top3)} signals to group at {datetime.now().strftime('%H:%M:%S')}")
+                print(f"✅ Sent {len(top3)} signals from cache to group at {datetime.now().strftime('%H:%M:%S')}")
             else:
-                print("⚠️  GROUP_CHAT_ID chưa được cấu hình, bỏ qua broadcast")
+                print("⚠️  GROUP_CHAT_ID chưa được cấu hình hoặc cache rỗng, bỏ qua broadcast")
         except Exception as e:
             print(f"Broadcaster Error: {e}")
 
@@ -201,7 +287,7 @@ def login(user: UserAuth):
 @app.get("/signals")
 @app.get("/signals/vip")
 def get_signals(email: str = "guest"):
-    return generate_signals()
+    return CACHED_SIGNALS
 
 @app.get("/activate-vip")
 def activate_vip(email: str, days: int = 30):
@@ -252,7 +338,7 @@ def manual_broadcast():
     """Gửi tín hiệu thủ công đến nhóm ngay lập tức."""
     if not GROUP_CHAT_ID:
         return {"status": "error", "detail": "GROUP_CHAT_ID chưa được cấu hình"}
-    signals = generate_signals()
+    signals = CACHED_SIGNALS if CACHED_SIGNALS else generate_signals()
     top3 = signals[:3]
     for sig in top3:
         icon = "📈" if sig['type'] == "LONG" else "📉"
